@@ -1,0 +1,422 @@
+---
+title: "SATools"
+author: "Systems Analysis UK"
+date: '2022-07-21'
+output: html_document
+---
+
+```{r setup, echo=FALSE, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+## Load Libraries ####
+packages <- list(
+  "rhdf5",
+  "DT",
+  "magrittr",
+  "fst",
+  "tidyverse",
+  "data.table",
+  "Biostrings",
+  "scales",
+  "pbapply",
+  "pbmcapply",
+  "parallel",
+  "rvest")
+message("Loading Packages...", appendLF = FALSE)
+suppressPackageStartupMessages(package.load.check <- sapply(packages, require, character.only = TRUE))
+if (!all(package.load.check)) stop("Not all packages loaded")
+message("DONE")
+
+## Set some useful defaults
+options(mc.cores=detectCores())    ## Allow the mc*apply functions to use all available cores
+setDTthreads(threads = detectCores())
+options(stringsAsFactors = FALSE)  ## Don't allow data.frames to use strings as factors by default
+options(scipen = 999)
+options(ignore.interactive = TRUE)
+
+## Illumina Theme, use for ggplot2 graphics e.g.  ggplot(data, aes(x = x, y = y)) + theme_Illumina() + geom_point()
+theme_Illumina <- function(){theme_grey(base_size = 24, base_family = "sans")}
+theme_set(theme_Illumina())
+### Functions #####
+source("SAReportFunctions.R")
+```
+
+```{r loadInteropData, echo=FALSE, include=FALSE}
+argv <- commandArgs(trailingOnly = TRUE)
+in.dir <- argv[1]
+runID <- in.dir %>% basename
+## Just for development
+#in.dir <- "/illumina/scratch/Lightning/Informatics/GoldenRuns/Galapagos/20220603_P2-13_0115_B12YCYOLO3/"
+interop.file <- list.files(in.dir, pattern = "_fullDataWithIQS.csv", full.names = TRUE)
+if (!is.null(interop.file)) {
+interop <- fread(interop.file)
+} else {
+  stop("Can not find _fullDataWithIQS.csv file")
+}
+
+interop <- fread(interop.file)
+```
+
+```{r LoadCachedData, echo=FALSE, include=FALSE}
+in.files <- list.files(file.path(in.dir, "Data", "InstrumentedData"),
+                       recursive = TRUE, 
+                       pattern = "AggregatedH5_s.*\\.csv", 
+                       full.names = TRUE)
+
+## Load in the cached CSV files ####
+message("Found ", in.files %>%
+length, " cache files to load")
+results <- in.files %>% 
+  pbmclapply(., fread) %>% 
+  rbindlist(fill = TRUE)
+
+## Post Processing ####
+results[, onInThisChannel := factor(
+onInThisChannel,
+levels = c("Empty", "FALSE", "TRUE"),
+labels = c("Empty", "Off", "On")
+)]
+
+results <- results[!is.na(cycle),]
+
+cycles <- results$cycle %>% unique
+
+## Variable Analysis ####
+variable.of.interest <- "run_lane"
+results[,var:=str_c(run,"_",lane) %>% str_remove("_ASampleFlowcell")]
+
+results <- results %>%
+  mutate(Read = ifelse(cycle <= 151, 'R2', 'R1'))
+  
+```
+
+# `r runID`
+### Summary
+```{r generateLaneSummary, echo = FALSE}
+summary <- results %>% 
+  .[,.(
+    `mapq` = `mapq` %>% mean(na.rm = TRUE) %>% round(2),
+    `Qscore` = `Qscore` %>% mean(na.rm = TRUE) %>% round(2),
+    `PF` = `PF` %>% mean(na.rm = TRUE) %>% round(2),
+    `is.empty` = `is.empty` %>% mean(na.rm = TRUE) %>% round(2),
+    `isize` = `isize` %>% median(na.rm = TRUE) %>% round(2)
+    ),
+    by = .(lane,tile)]
+```
+
+```{r outputSummaryHTMLtable, echo = FALSE}
+datatable(summary, filter = 'top')
+```
+
+`r format(Sys.time(), '%d %B, %Y')`
+
+## Analyses {.tabset}
+
+### PRIMETA
+
+#### Primary Metrics Analysis {.tabset}
+
+Code used for the analysis: https://git.illumina.com/mgataric/quality_models
+
+##### Quality Drivers All Cycles
+
+Main drivers of quality deterioration over all cycles:
+
+```{r Top_drivers, echo=FALSE, fig.cap="", out.width = '55%'}
+plt = primeta.plot('var_bars.png')
+if (is.character(plt)){
+  knitr::include_graphics(plt)
+}
+``` 
+
+```{r Drives_per_tile_group, echo=FALSE, fig.cap="", out.width = '100%'}
+plt = primeta.plot('scores_and_ranks_per_Surface_Lane.png')
+if (is.character(plt)){
+  knitr::include_graphics(plt)
+}
+```
+
+```{r Drivers_med_scores_and_coef, echo=FALSE, fig.cap="", out.width = '100%'}
+plt = primeta.plot('multilev_reg_per_tile.png')
+if (is.character(plt)){
+  knitr::include_graphics(plt)
+}
+```
+
+##### Quality Prediction
+
+Predicted change in quality if a metric remained constant over all cycles:
+
+###### - If the main quality driver is kept constant throughout run:
+```{r Primeta_phasing, echo=FALSE, fig.cap="", out.width = '100%'}
+plt = primeta.plot('pred_changed_key_driver.png')
+if (is.character(plt)){
+  knitr::include_graphics(plt)
+}
+```
+
+###### - If Image Quality Score is kept constant throughout run:
+```{r Primeta_FWHM_green, echo=FALSE, fig.cap="", out.width = '100%'}
+plt = primeta.plot('pred_changed_Focus.png')
+if (is.character(plt)){
+  knitr::include_graphics(plt)
+}
+```
+
+###### - If Pre/Phasing Weight is kept constant throughout run:
+```{r Primeta_lock_phasing_weight, echo=FALSE, fig.cap="", out.width = '100%'}
+plt = primeta.plot('pred_changed_PP.png')
+if (is.character(plt)){
+  knitr::include_graphics(plt)
+}
+```
+
+##### Quality Drivers Last 10 Cycles
+
+Main drivers of quality variation among different tiles in the last 10 cycles:
+
+```{r varriation_last_cyc, echo=FALSE, fig.cap="", out.width = '55%'}
+plt = primeta.plot('var_bars_last_cycles.png')
+if (is.character(plt)){
+  knitr::include_graphics(plt)
+}
+```
+
+```{r scores_per_cyc, echo=FALSE, fig.cap="", out.width = '100%'}
+plt = primeta.plot('scores_per_cycle_group.png')
+if (is.character(plt)){
+  knitr::include_graphics(plt)
+}
+```
+
+```{r multi_reg_per_cyc, echo=FALSE, fig.cap="", out.width = '100%'}
+plt = primeta.plot('multi_reg_per_cycle_group.png')
+if (is.character(plt)){
+  knitr::include_graphics(plt)
+}
+```
+
+##### Metrics
+
+Covariance of metrics used in analysis and their correlation to the response variable:
+
+```{r Primeta_merged_corr_metrics, echo=FALSE, fig.cap="", out.width = '100%'}
+plt = primeta.plot('corr_merged_metrics.png')
+if (is.character(plt)){
+  knitr::include_graphics(plt)
+}
+```
+
+Breakdown of new metrics constructed from those that are highly correlated (new metrics are with + signs):
+
+```{r Primeta_merged_metrics, echo=FALSE, fig.cap="", out.width = '100%'}
+plt = primeta.plot('^merged_metrics.png')
+if (is.character(plt)){
+  knitr::include_graphics(plt)
+}
+```
+
+#### End
+```{r name, echo=FALSE, fig.cap="", out.width = '100%'}
+#knitr::include_graphics(primeta.plot(''))
+
+```
+
+
+
+
+
+### SNR
+
+#### Results {.tabset}
+
+```{r, settings, echo=FALSE, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.height = 20, fig.width = 12)
+```
+
+##### By Number of Neighbours Off/Empty
+Signal to noise over cycles and grouped by the number of neighbouring wells that are either off in the associated channel or empty.
+```{r SNR_by_Neighbours,  echo=FALSE, fig.cap="A caption", fig.width=30, fig.height=15, out.width = '100%'}
+plotSNRforVariable(variable.of.interest = "neighboursOffOrEmpty", y.space = 4, x.space = 10)
+```
+
+```{r SNR_by_Neighbours_per_lane,  echo=FALSE, fig.cap="A caption", fig.width=30, fig.height=15, out.width = '100%'}
+plotSNRforVariable(variable.of.interest = "lane", y.space = 4, x.space = 10)
+```
+
+```{r, SNR_by_Neighbours_mean,  echo=FALSE, fig.cap="A caption", fig.width=5, fig.height=10, out.width = '100%'}
+plotSNRforVariable(variable.of.interest = "neighboursOffOrEmpty", returnMean = TRUE, y.space = 4, x.space = 10)
+```
+
+##### By Surface
+Signal to noise over cycles and grouped by surface.
+```{r SNR_by_surface, echo=FALSE, fig.cap="A caption", out.width = '100%', fig.height=15}
+### SNR By Surface ####
+plotSNRforVariable(variable.of.interest = "surface")
+
+
+```
+
+##### By Prior Base
+Signal to noise over cycles and grouped by the prior base call.
+```{r SNR,  echo=FALSE, fig.cap="A caption", out.width = '100%', fig.width=30, fig.height=15}
+### SNR by prior base ####
+plotSNRforVariable(variable.of.interest = "priorBase")
+
+
+```
+
+### Insert Size
+
+
+```{r chastity_by_isize,  out.width = '100%', fig.width=10, fig.height=5}
+p <- results[channel == 'ch1' & (PF) & isize > 0 & mapq > 10] %>% select(isize, Qscore, Read) %>% mutate(cut_number = cut_number(isize, n = 10)) %>% group_by(cut_number) %>% mutate(mean = mean(Qscore), sd = sd(Qscore)) %>% select(cut_number, mean, sd, Read) %>% unique()
+
+p2 <- results[
+channel == "ch1" & (PF) & mapq > 10 & isize > 0,
+.(mean = mean(chastity), sd = sd(chastity)),
+by = .(cut_number(isize,10),Read)]
+
+p2 %>% ggplot(aes(x = cut_number, y = mean, ymin = mean-sd, ymax = mean+sd)) +
+  #      theme_Illumina() +
+  #geom_pointrange(aes(col = Read)) +
+  geom_point(aes(group = Read, col = Read), size = 3) +
+  geom_line(aes(group = Read, col = Read), size = 2) +
+  xlab("Insert Size") + ylab("Mean Chastity") +
+  ggtitle(paste("mean Chastity by insert size")) +
+  theme(axis.text = element_text(size = 10)) +
+  theme(axis.text.x = element_text(size = 15, angle = 45, vjust = 0.9, hjust = 0.8))
+```
+
+```{r intensity_desity}
+current.cycle=27
+results[(PF) &  (cycle == current.cycle) & mapq > 10  & isize > 0,
+corrected,
+by = .(cut_number(isize, 10), Read, onInThisChannel, channel)] %>%
+ggplot(aes(x = corrected)) + geom_density(aes(fill = Read), alpha = 0.5) +
+facet_grid(cut_number~onInThisChannel+channel) +
+ggtitle(paste(
+"C",
+current.cycle,
+variable.of.interest,
+"Corrected Intensity : Insert Size"
+)) +
+  theme(axis.text = element_text(size = 10)) +
+  theme(axis.text.x = element_text(size = 15, angle = 45, vjust = 0.9, hjust = 0.8))
+```
+
+
+```{r mapq_by_isize, fig.width=10, fig.height=10}
+x <-   results[
+(PF) & mapq >10 & isize > 0 &
+(cycle <= 150 | cycle >=302-151),
+mean(Qscore),
+by = .(cut_number(isize,10), cycle,var)]
+
+x %>%
+ggplot(aes(x = cycle, y = cut_number)) +
+geom_tile(aes(fill = V1)) 
+```
+
+```{r error_rate_by_isize, fig.width=10, fig.height=5}
+results[isize <= 1500 & channel == "ch1" & mapq > 10  & isize > 0 & (PF) &  (cycle == 27) &
+(cycleMisMatch %in% c("-", "=", DNA_BASES)),
+.(error.rate = (sum(cycleMisMatch != "=", na.rm = TRUE) / .N) *
+100, N = .N, medianIsize = median(isize) %>% round(0)),
+by = .(cut_number(isize, 10), Read)] %>%
+  ggplot(aes(x = cut_number, y = error.rate)) +
+  #      theme_Illumina() +
+  geom_point(aes(col = Read)) +
+  geom_line(aes(group = Read, col = Read)) +
+  xlab("Insert Size") + ylab("Error Rate") +
+  guides(col = guide_legend(title = variable.of.interest)) +
+  ggtitle(paste(
+  "C",
+  current.cycle,
+  variable.of.interest,
+  "Human Error Rate : Insert Size")) +
+    theme(axis.text = element_text(size = 10)) +
+    theme(axis.text.x = element_text(size = 15, angle = 45, vjust = 0.9, hjust = 0.8))
+```
+
+```{r mean_chastity, fig.width=12, fig.height=12}
+
+x.bins <- 50
+y.bins <- 50
+results[(PF) &
+cycle == 27 &
+channel == "ch1", .(mean = mean(chastity)), by = .(calledBase, cut_interval(X, x.bins, dig.lab=5), cut_interval(Y, y.bins, dig.lab=5))] %>%
+ggplot(aes(x = cut_interval, y = cut_interval.1)) +
+geom_tile(aes(fill = mean)) + xlab("X") + ylab("Y") +
+facet_wrap( ~ calledBase) +
+ggtitle(paste(variable.of.interest, " mean chasity c", current.cycle)) +
+  theme(axis.text = element_text(size = 10)) +
+  theme(axis.text.x = element_text(size = 3, angle = 45, vjust = 0.9, hjust = 0.8)) 
+```
+
+
+### Crosstalk
+#### Coming Soon
+
+```{r crosstalk_chastity_per_lane, fig.width=10, fig.height=5}
+
+results[(PF) &
+channel == "ch1" &
+cycle == current.cycle ,
+.(meanChastity = mean(chastity),
+sdChastity = sd(chastity)),
+by = .(neighboursOffOrEmpty, lane)] %>%
+ggplot(aes(x = neighboursOffOrEmpty, y = meanChastity)) +
+geom_line(aes(col = lane)) +
+ggtitle(paste("C", current.cycle, variable.of.interest, "Chastity : CrossTalk")) 
+
+```
+```{r, fig.width=10, fig.height=5}
+results[(PF) & channel == "ch1" & (cycle == 27) &
+(cycleMisMatch %in% c("-", "=", DNA_BASES)),
+.(error.rate = (sum(cycleMisMatch != "=", na.rm = TRUE) / .N) *
+100, N = .N),
+by = .(neighboursOffOrEmpty, lane)] %>% filter(error.rate > 0) %>%
+ggplot(aes(x = neighboursOffOrEmpty, y = error.rate)) +
+theme_Illumina() +
+geom_point(aes(col = lane)) +
+geom_line(aes(col = lane)) +
+guides(col = guide_legend(title = variable.of.interest)) +
+ggtitle(paste(
+"C",
+current.cycle,
+variable.of.interest,
+"Human Error Rate : CrossTalk"
+))
+```
+
+### Signal Decay
+#### Coming Soon
+
+```{r chastity_over_cycles, fig.width=10, fig.height=5}
+
+cycles.to.plot <- cycles[c(
+(cycles - 25) %>% is_weakly_greater_than(0) %>% which() %>% extract2(1),
+cycles %>% length %>% divide_by(3) %>% round(0),
+cycles %>% length %>% divide_by(3) %>% round(0) %>% multiply_by(2),
+cycles %>% length
+)]
+
+x <-results[
+channel == "ch1" & (PF) &
+cycle %in% cycles.to.plot,
+.(mean=mean(chastity)),
+by = .( run, lane, surface, swath, tile, idx,cycle)]
+x[,mean2:= mean %>% round(2)]
+x %>%
+ggplot(aes(x = mean2)) +
+geom_histogram(aes(y = stat(count) / sum(count),fill = lane), bins = 100) +
+xlim(0.5,1) +
+scale_y_continuous(labels = percent) +
+guides(fill = guide_legend(title = variable.of.interest)) +
+ylab("Percent of Clusters") + xlab("Mean Chastity per Cluster") +
+facet_grid(cycle~lane, scales = "free_y")
+```
+
+
+### Background
+#### Coming Soon
