@@ -1,0 +1,217 @@
+---
+title: "Region Specific Analysis"
+author: "Joseph Sims, Miguel Santos"
+execute: 
+  echo: false
+format: 
+  html:
+    page-layout: article
+    theme: pandoc
+    max-width: 72em
+    fig-width: 10
+    fig-height: 15
+    fig-align: center
+    self-contained: true
+params:
+  runFolder : "NA"
+  runFolder2 : "NA"
+  bed: "NA"
+  tile: "NA"
+  tile.run2: "NA"
+---
+# Region Specific Analysis
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+## Main code
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+```{r}
+## Load Libraries ####
+packages <- list(
+  "matrixStats",
+  "GenomicRanges",
+  "rtracklayer",
+  "rhdf5",
+  "magrittr",
+  "fst",
+  "tidyverse",
+  "data.table",
+  "Biostrings",
+  "scales",
+  "pbapply",
+  "pbmcapply",
+  "parallel",
+  "rvest")
+message("Loading Packages...", appendLF = FALSE)
+suppressPackageStartupMessages(package.load.check <- sapply(packages, require, character.only = TRUE))
+if (!all(package.load.check)) stop("Not all packages loaded")
+message("DONE")
+
+library(gridExtra)
+library(BSgenome.Hsapiens.NCBI.GRCh38)
+library(TmCalculator)
+source("XXXXXXXXXXXXXXXXXXXXX/Users/jsims/gquad/PlatformAnalysis/PlatformAnalysis/G_Main_functions.R")
+source("XXXXXXXXXXXXXXXXXXXXX/Users/jsims/gquad/PlatformAnalysis/PlatformAnalysis/Plotting_functions.R")
+source("XXXXXXXXXXXXXXXXXXXXX/Users/jsims/gquad/PlatformAnalysis/PlatformAnalysis/Plotting_functions_InterRun.R")
+
+theme_Illumina <- function(){theme_grey(base_size = 24, base_family = "sans")}
+
+if (!is.na(params$runFolder) && params$runFolder != "NA"){
+  runFolder <- params$runFolder
+}
+
+if (!is.na(params$runFolder2) && params$runFolder2 != "NA"){
+  runFolder2 <- params$runFolder2
+}
+
+if (!is.na(params$bed) && params$bed != "NA"){
+  bed <- params$bed
+}
+
+if (!is.na(params$tile) && params$tile != "NA"){
+  tile <- params$tile %>% str_replace(.,'-', '_')
+}
+
+if (!is.na(params$tile.run2) && params$tile.run2 != "NA"){
+  tile.run2 <- params$tile.run2 %>% str_replace(.,'-', '_')
+}
+```
+
+```{r}
+#| output: true
+#runFolder <- 'XXXXXXXXXXXXXXXXXXXXX/Users/jsims/Faroe/20220519_P2-13_0084_A141KYOLO3'
+#runFolder2 <- 'XXXXXXXXXXXXXXXXXXXXX/Users/jsims/Faroe/20220519_P2-13_0084_A141KYOLO3'
+#tile <- '1_1133'
+#tile.run2 <- '8_1133'
+
+runFolder 
+runFolder2 
+tile 
+tile.run2
+bed
+```
+
+You can add options to executable code like this
+
+```{r}
+
+
+bed_name <- bed %>% basename %>% str_remove("\\.bed")
+```
+
+```{r}
+bam.metrics <- basename(runFolder) %>%
+  strsplit('_') %>% .[[1]] %>%
+  tail(., n=1) %>% 
+  paste(., '_', tile, '.h5', sep = '') %>%
+  sub('.', '', .)
+```
+
+```{r}
+lane <- sub('_.*', "", tile)
+```
+
+```{r}
+tile.metrics <- paste('L00', lane, '/s_', tile, '.h5', sep = '')
+```
+
+```{r}
+bam.metrics.run2 <- basename(runFolder2) %>%
+  strsplit('_') %>% .[[1]] %>%
+  tail(., n=1) %>% 
+  paste(., '_', tile.run2, '.h5', sep = '') %>%
+  sub('.', '', .)
+```
+
+```{r}
+lane <- sub('_.*', "", tile.run2)
+```
+
+```{r}
+tile.metrics.run2 <- paste('L00', lane, '/s_', tile.run2, '.h5', sep = '')
+```
+
+```{r}
+tile
+tile.metrics
+tile.run2
+tile.metrics.run2
+bam.metrics
+bam.metrics.run2
+```
+
+```{r}
+
+run1_data <- buildReadObject(paste(runFolder, '/Data/InstrumentedData', sep = ''), 
+                                  tile.metrics, bam.metrics)
+run2_data <-  buildReadObject(paste(runFolder2, '/Data/InstrumentedData', sep = ''), 
+                              tile.metrics.run2, bam.metrics.run2)
+```
+
+The `echo: false` option disables the printing of code (only output is displayed).
+
+```{r}
+Grange_object_r1_run1 <- calculateOverlaps(run1_data[[1]], bed, ignore.strand = TRUE,  pad = T, correct = 0)
+Grange_object_r1_run2 <- calculateOverlaps(run2_data[[1]], bed, ignore.strand = TRUE,  pad = T, correct = 0)
+```
+
+```{r}
+list_run1 <- generateOverlapsAndControls(Grange_object_r1_run1, c('-+', '+-'), 0, run1_data[[4]], 3,  run1_data[[3]], run1_data[[5]],
+                                          run1_data[[6]])
+
+list_run2 <- generateOverlapsAndControls(Grange_object_r1_run2, c('-+', '+-'), 0, run2_data[[4]], 3,  run2_data[[3]], run2_data[[5]],
+                                         run2_data[[6]])
+```
+
+```{r}
+idx_run1 <- generateControlIndexMatched(list_run1[[3]], list_run1[[1]])
+idx_run2 <- generateControlIndexMatched(list_run2[[3]], list_run2[[1]])
+```
+
+# Analyses
+
+::: panel-tabset
+## Basecall
+
+```{r}
+basecallPlotRelPosInterRun(list_run1[[3]], list_run1[[1]], list_run2[[3]],
+                           list_run2[[1]], idx_run1, run1_data[[4]],
+                           list_run1[[5]], list_run1[[6]], list_run2[[5]],
+                           list_run2[[6]], bed)
+```
+
+## Chastity
+
+```{r}
+chastPlotRelPosInterRun(list_run1[[4]], list_run2[[4]], list_run1[[2]], list_run2[[2]], run1_data[[4]], run2_data[[4]], bed_name)
+
+
+```
+
+## Mutation Frequency
+
+```{r}
+plotMutFrequencyInterRun(run1_data[[6]], run2_data[[6]], run1_data[[5]], run2_data[[5]], Grange_object_r1_run1, Grange_object_r1_run2, c('+-', '-+'), 0, run1_data[[4]], run2_data[[4]],  bed_name)
+
+```
+
+## Cloud Plots
+
+```{r include=}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+:::
+
+```{r}
+
+```
